@@ -1,0 +1,114 @@
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 as base
+
+# Set build arguments
+ARG WEBUI_VERSION=1.10.1
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV WEBUI_VERSION=${WEBUI_VERSION}
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    wget \
+    curl \
+    git \
+    python3 \
+    python3-pip \
+    python3-venv \
+    python3-dev \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxrender1 \
+    libxext6 \
+    libfontconfig1 \
+    libice6 \
+    libgoogle-perftools4 \
+    libtcmalloc-minimal4 \
+    bc \
+    build-essential \
+    pkg-config \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build stage
+FROM base as builder
+
+WORKDIR /build
+
+# Clone the repository
+RUN git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui.git . \
+    && git checkout v${WEBUI_VERSION}
+
+# Create virtual environment and install dependencies
+RUN python3 -m venv venv \
+    && /build/venv/bin/pip install --upgrade pip setuptools wheel \
+    && /build/venv/bin/pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128 \
+    && /build/venv/bin/pip install xformers \
+    && /build/venv/bin/pip install -r requirements_versions.txt
+
+# Verify CUDA installation
+RUN /build/venv/bin/python -c "import torch; print(f'PyTorch version: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}'); print(f'Device count: {torch.cuda.device_count()}')"
+
+# Runtime stage
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 as runtime
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-venv \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxrender1 \
+    libxext6 \
+    libfontconfig1 \
+    libice6 \
+    libgoogle-perftools4 \
+    libtcmalloc-minimal4 \
+    bc \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a non-root user
+RUN useradd -m -s /bin/bash webui
+
+# Set working directory
+WORKDIR /app
+
+# Copy application and virtual environment from builder
+COPY --from=builder /build /app
+COPY --from=builder /build/venv /app/venv
+
+# Change ownership to webui user
+RUN chown -R webui:webui /app
+
+# Switch to webui user
+USER webui
+
+# Create startup script with CUDA optimizations
+RUN echo '#!/bin/bash\n\
+source /app/venv/bin/activate\n\
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}\n\
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128\n\
+python launch.py --listen --port 7860 --xformers --opt-sdp-attention --enable-insecure-extension-access --no-download-sd-model "$@"' > /app/start.sh \
+    && chmod +x /app/start.sh
+
+# Expose the default port
+EXPOSE 7860
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:7860/ || exit 1
+
+# Set the default command
+CMD ["/app/start.sh"]

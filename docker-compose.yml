@@ -1,0 +1,50 @@
+version: "3.8"
+
+services:
+  stable-diffusion-webui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        WEBUI_VERSION: "1.10.1"
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./models:/app/models
+      - ./outputs:/app/outputs
+      - ./extensions:/app/extensions
+      - ./embeddings:/app/embeddings
+      - ./config.json:/app/config.json
+      - ./ui-config.json:/app/ui-config.json
+    environment:
+      - WEBUI_VERSION=1.10.1
+      - CPU_ONLY=true
+    restart: unless-stopped
+
+  stable-diffusion-webui-cuda:
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+      args:
+        WEBUI_VERSION: "1.10.1"
+    ports:
+      - "7861:7860"
+    volumes:
+      - ./models:/app/models
+      - ./outputs:/app/outputs
+      - ./extensions:/app/extensions
+      - ./embeddings:/app/embeddings
+      - ./config.json:/app/config.json
+      - ./ui-config.json:/app/ui-config.json
+    environment:
+      - WEBUI_VERSION=1.10.1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
